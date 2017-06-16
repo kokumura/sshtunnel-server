@@ -1,0 +1,2 @@
+sshtunnel>=0.1.2
+PyYAML

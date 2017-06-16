@@ -1,0 +1,9 @@
+- host: myname@myhost1
+  key: ~/.ssh/id_rsa
+  locals:
+    - :13306:my-db-server:3306
+    - :8080:my-http-server:80
+# if you have ~/.ssh/config file, settings in the file is also available
+- host: myhost2
+  locals:
+    - :23306:my-db-server:3306
