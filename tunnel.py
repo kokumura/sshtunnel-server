@@ -9,34 +9,14 @@ from typing import List,Tuple,Dict
 
 import logging
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.INFO)
-logger.addHandler(logging.StreamHandler())
-
-app_dir = os.path.abspath(os.path.realpath(os.path.dirname(__file__)))
-config_load_path = ['', app_dir, os.path.join(app_dir,'conf')]
-
-
-def find_config_file(file_name:str) -> str:
-    file_path = file_name
-    for config_dir in config_load_path:
-        file_path = os.path.realpath(os.path.join(config_dir,file_name))
-        if os.path.isfile(file_path):
-            return file_path
-
-    raise IOError(f'cannot find config file {file_name}')
-
-
-def load_config(file_name:str) -> Dict:
-    file_path = find_config_file(file_name)
-    with open(file_path) as f:
-        return yaml.load(f)
 
 
 class LocalTunnel:
-    def __init__(self, ssh_expr:str, fwd_exprs:List[str], ssh_pkey:str=None):
+    def __init__(self, ssh_expr:str, fwd_exprs:List[str], ssh_pkey:str=None, default_local_addr=None):
         self.fwd_exprs = fwd_exprs
         self.ssh_expr = ssh_expr
         self.ssh_pkey = ssh_pkey
+        self.default_local_addr = default_local_addr
         self._param = self._create_forwarder_param(ssh_expr, fwd_exprs, ssh_pkey)
         self._forwarder = SSHTunnelForwarder(**self._param)
 
@@ -44,11 +24,11 @@ class LocalTunnel:
         local_binds = []
         remote_binds = []
 
-        logger.info(f'setting up local tunnels via {self.ssh_expr}')
+        logger.info(f'setting up local tunnels via `{self.ssh_expr}`')
 
         for fwd_expr in fwd_exprs:
             local_host, local_port, remote_host, remote_port = fwd_expr.split(':')
-            local_host = local_host or '127.0.0.1'
+            local_host = local_host or self.default_local_addr or '127.0.0.1'
             local_binds.append( (local_host, int(local_port)) )
             remote_binds.append( (remote_host, int(remote_port)) )
             logger.info(f'    add {local_host}:{local_port} -> {remote_host}:{remote_port}')
@@ -72,42 +52,78 @@ class LocalTunnel:
         self._forwarder.stop()
 
 
-def accept_conf(conf:Dict) -> LocalTunnel:
+def accept_conf(conf:Dict, default_local_addr) -> LocalTunnel:
     ssh_expr = conf['host']
     ssh_pkey = conf.get('key')
     local_fwds = conf.get('locals')
-    return LocalTunnel(ssh_expr, local_fwds, ssh_pkey)
+    return LocalTunnel(ssh_expr, local_fwds, ssh_pkey, default_local_addr)
 
 
-def main(args:List[str]):
+def load_config(file_path:str) -> Dict:
+    with open(os.path.expanduser(file_path)) as f:
+        return yaml.load(f)
+
+
+def parse_args(args):
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--addr', help='default local bind address (DEFAULT: 127.0.0.1)', type=str, default='127.0.0.1')
+    parser.add_argument('--exec', help='execute command', type=str)
+    parser.add_argument('--silent', help='be silent', action='store_true')
+    parser.add_argument('conf_files', help='forward config files', type=str, nargs='+')
+    return parser.parse_args(args)
+
+
+def main(args):
     local_tunnels = []  # type: List[LocalTunnel]
+    local_addr = args.addr
+    conf_files = args.conf_files
+    exec_command = args.exec
 
-    conf_files = args[:]
+    if args.silent:
+        logger.setLevel(logging.WARN)
+
     for conf_file in conf_files:
         conf_list = load_config(conf_file)
         if not isinstance(conf_list, list):
             conf_list = [conf_list]
         for conf in conf_list:
-            local_tunnels.append(accept_conf(conf))
+            local_tunnels.append(accept_conf(conf, default_local_addr=local_addr))
 
     try:
         for tun in local_tunnels:
-            logger.info(f'start tunnel {tun.ssh_expr}')
+            logger.info(f'starting tunnel `{tun.ssh_expr}`')
             tun.start()
 
         logger.info('started')
 
-        # wait forever
-        while True:
-            time.sleep(60)
+        if exec_command is None:
+            # server mode: wait forever
+            while True:
+                time.sleep(60)
+
+        else:
+            import subprocess
+            logger.info(f'execute {exec_command}')
+            retcode = subprocess.check_call(exec_command, shell=True)
+            exit(retcode)
 
     finally:
         for tun in local_tunnels:
             try:
                 tun.stop()
             except:
-                logger.exception('failed to stop server '+ str(tun))
+                logger.exception(f'failed to stop server {str(tun)}')
 
 
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    def configure_logger(logger):
+        log_level = logging.INFO
+        handler = logging.StreamHandler(sys.stderr)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logger.addHandler(handler)
+        handler.setLevel(log_level)
+        handler.setFormatter(formatter)
+        logger.setLevel(log_level)
+    configure_logger(logger)
+    main(parse_args(sys.argv[1:]))
